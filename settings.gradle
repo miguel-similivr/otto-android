@@ -1,1 +1,1 @@
-include ':obd-java-api'
+include ':obd-java-api', ':accountAuthenticator'

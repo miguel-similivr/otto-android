@@ -7,4 +7,7 @@
     <!-- Blue Grey 700 -->
     <color name="accent">#ff5252</color>
     <!-- Red A200 -->
+    <color name="colorPrimary">#b2145b</color>
+    <color name="colorPrimaryDark">#a41254</color>
+    <color name="colorAccent">#FF4081</color>
 </resources>
