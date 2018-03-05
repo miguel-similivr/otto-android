@@ -22,6 +22,7 @@ repositories {
 android {
     compileSdkVersion 24
     android.buildToolsVersion "23.0.1"
+    useLibrary 'org.apache.http.legacy'
     defaultConfig {
         minSdkVersion 24
         targetSdkVersion 24

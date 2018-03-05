@@ -125,7 +125,7 @@ public class ParseComServerAuthenticate implements ServerAuthenticate{
     }
 
 
-    private class ParseComError implements Serializable {
+    public class ParseComError implements Serializable {
         int code;
         String error;
     }

@@ -231,7 +231,7 @@ public class TroubleCodesActivity extends Activity {
     }
 
 
-    public class ModifiedTroubleCodesObdCommand extends TroubleCodesCommand {
+    public static class ModifiedTroubleCodesObdCommand extends TroubleCodesCommand {
         @Override
         public String getResult() {
             // remove unwanted response from output since this results in erroneous error codes

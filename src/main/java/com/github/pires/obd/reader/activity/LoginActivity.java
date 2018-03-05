@@ -3,6 +3,8 @@ package com.github.pires.obd.reader.activity;
 import android.Manifest;
 import android.accounts.Account;
 import android.accounts.AccountManager;
+import android.accounts.AuthenticatorException;
+import android.accounts.OperationCanceledException;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.TargetApi;
@@ -49,6 +51,7 @@ import com.udinic.accounts_authenticator_example.authentication.AccountGeneral;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -333,6 +336,7 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
             showProgress(true);
             mAuthTask = new UserLoginTask(email, password);
             mAuthTask.execute();
+
         }
     }
 
@@ -521,7 +525,15 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
             if (intent.hasExtra(KEY_ERROR_MESSAGE)) {
                 Toast.makeText(getBaseContext(), intent.getStringExtra(KEY_ERROR_MESSAGE), Toast.LENGTH_SHORT).show();
             } else {
-                finishLogin(intent);
+                try {
+                    finishLogin(intent);
+                } catch (AuthenticatorException e) {
+                    e.printStackTrace();
+                } catch (OperationCanceledException e) {
+                    e.printStackTrace();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
             }
 //            mAuthTask = null;
 //            showProgress(false);
@@ -534,14 +546,14 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
 //            }
         }
 
-        private void finishLogin(Intent intent) {
+        private void finishLogin(Intent intent) throws AuthenticatorException, OperationCanceledException, IOException {
             Log.d("udinic", TAG + "> finishLogin");
 
             String accountName = intent.getStringExtra(AccountManager.KEY_ACCOUNT_NAME);
             String accountPassword = intent.getStringExtra(PARAM_USER_PASS);
             final Account account = new Account(accountName, "com.github.pires.obd.reader");
 
-            if (getIntent().getBooleanExtra(ARG_IS_ADDING_NEW_ACCOUNT, false)) {
+            if (getIntent().getBooleanExtra(ARG_IS_ADDING_NEW_ACCOUNT, true)) {
                 Log.d("udinic", TAG + "> finishLogin > addAccountExplicitly");
                 String authtoken = intent.getStringExtra(AccountManager.KEY_AUTHTOKEN);
                 String authtokenType = mAuthTokenType;
@@ -557,7 +569,12 @@ public class LoginActivity extends AppCompatActivity implements LoaderCallbacks<
 
             //setAccountAuthenticatorResult(intent.getExtras());
             setResult(RESULT_OK, intent);
+//
+//            Account[] temp = mAccountManager.getAccounts();
+//            String temp2 = mAccountManager.blockingGetAuthToken(temp[0], "com.github.pires.obd.reader", false);
+
             //finish();
+
             Intent next = new Intent(getApplicationContext(), com.github.pires.obd.reader.activity.MainActivity.class);
             startActivity(next);
         }

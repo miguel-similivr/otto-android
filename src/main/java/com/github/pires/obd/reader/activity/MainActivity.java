@@ -1,9 +1,16 @@
 package com.github.pires.obd.reader.activity;
 
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.accounts.AuthenticatorException;
+import android.accounts.OperationCanceledException;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.app.ProgressDialog;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothSocket;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -28,9 +35,11 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
 import android.view.ViewGroup.MarginLayoutParams;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TableLayout;
 import android.widget.TableRow;
@@ -41,10 +50,20 @@ import com.github.pires.obd.commands.ObdCommand;
 import com.github.pires.obd.commands.SpeedCommand;
 import com.github.pires.obd.commands.engine.RPMCommand;
 import com.github.pires.obd.commands.engine.RuntimeCommand;
+import com.github.pires.obd.commands.protocol.EchoOffCommand;
+import com.github.pires.obd.commands.protocol.LineFeedOffCommand;
+import com.github.pires.obd.commands.protocol.ObdResetCommand;
+import com.github.pires.obd.commands.protocol.SelectProtocolCommand;
 import com.github.pires.obd.enums.AvailableCommandNames;
+import com.github.pires.obd.enums.ObdProtocols;
+import com.github.pires.obd.exceptions.MisunderstoodCommandException;
+import com.github.pires.obd.exceptions.NoDataException;
+import com.github.pires.obd.exceptions.UnableToConnectException;
 import com.github.pires.obd.reader.R;
 import com.github.pires.obd.reader.config.ObdConfig;
 import com.github.pires.obd.reader.io.AbstractGatewayService;
+import com.github.pires.obd.reader.io.BluetoothManager;
+import com.github.pires.obd.reader.io.HttpObd;
 import com.github.pires.obd.reader.io.LogCSVWriter;
 import com.github.pires.obd.reader.io.MockObdGatewayService;
 import com.github.pires.obd.reader.io.ObdCommandJob;
@@ -55,6 +74,7 @@ import com.github.pires.obd.reader.net.ObdService;
 import com.github.pires.obd.reader.trips.TripLog;
 import com.github.pires.obd.reader.trips.TripRecord;
 import com.google.inject.Inject;
+import com.udinic.accounts_authenticator_example.authentication.ParseComServerAuthenticate;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -74,6 +94,7 @@ import roboguice.inject.InjectView;
 
 import static com.github.pires.obd.reader.activity.ConfigActivity.getGpsDistanceUpdatePeriod;
 import static com.github.pires.obd.reader.activity.ConfigActivity.getGpsUpdatePeriod;
+import static com.udinic.accounts_authenticator_example.authentication.AccountGeneral.sServerAuthenticate;
 
 // Some code taken from https://github.com/barbeau/gpstest
 
@@ -93,6 +114,11 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
     private static final int TRIPS_LIST = 10;
     private static final int SAVE_TRIP_NOT_AVAILABLE = 11;
     private static final int REQUEST_ENABLE_BT = 1234;
+
+    public static final String KEY_ERROR_MESSAGE = "ERR_MSG";
+    private AccountManager mAccountManager;
+    private String mAuthToken;
+
     private static boolean bluetoothDefaultIsEnable = false;
 
     static {
@@ -108,6 +134,9 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
     /// the trip log
     private TripLog triplog;
     private TripRecord currentTrip;
+
+    private BluetoothDevice dev = null;
+    private BluetoothSocket sock = null;
 
     @InjectView(R.id.compass_text)
     private TextView compass;
@@ -187,7 +216,7 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
                     Map<String, String> temp = new HashMap<String, String>();
                     temp.putAll(commandResult);
                     ObdReading reading = new ObdReading(lat, lon, alt, System.currentTimeMillis(), vin, temp);
-                    new UploadAsyncTask().execute(reading);
+                    //new UploadAsyncTask().execute(reading);
 
                 } else if (prefs.getBoolean(ConfigActivity.ENABLE_FULL_LOGGING_KEY, false)) {
                     // Write the current reading to CSV
@@ -322,6 +351,7 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mAccountManager = AccountManager.get(getBaseContext());
 
         final BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
         if (btAdapter != null)
@@ -338,6 +368,17 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
         triplog = TripLog.getInstance(this.getApplicationContext());
         
         obdStatusTextView.setText(getString(R.string.status_obd_disconnected));
+
+        Button mSendCode = (Button) findViewById(R.id.send_code_button);
+        mSendCode.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                String remoteDevice = prefs.getString(ConfigActivity.BLUETOOTH_LIST_KEY, null);
+                GetTroubleCodesTask gtct = new GetTroubleCodesTask();
+                gtct.execute(remoteDevice);
+            }
+        });
+
     }
 
     @Override
@@ -696,30 +737,148 @@ public class MainActivity extends RoboActivity implements ObdProgressListener, L
     /**
      * Uploading asynchronous task
      */
-    private class UploadAsyncTask extends AsyncTask<ObdReading, Void, Void> {
+    private class UploadAsyncTask extends AsyncTask<String, Void, Void> {
 
+        protected Void doInBackground(String... readings) {
+            String url ="http://ottorepairs.com/api/datalog";
+            Log.d("udinic", TAG + "> Started sending OBD2");
+            HttpObd httpobd = new HttpObd();
+
+            Account[] temp = mAccountManager.getAccounts();
+            String authtoken = "null";
+
+            try {
+                authtoken = mAccountManager.blockingGetAuthToken(temp[0], "Full access", false);
+            } catch (OperationCanceledException e) {
+                e.printStackTrace();
+            } catch (IOException e) {
+                e.printStackTrace();
+            } catch (AuthenticatorException e) {
+                e.printStackTrace();
+            }
+
+            double data = 1.5;
+
+            try {
+                httpobd.sendCode(readings[0], data, 1, authtoken);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+            return null;
+        }
+    }
+    private class GetTroubleCodesTask extends AsyncTask<String, Integer, String> {
         @Override
-        protected Void doInBackground(ObdReading... readings) {
-            Log.d(TAG, "Uploading " + readings.length + " readings..");
-            // instantiate reading service client
-            final String endpoint = prefs.getString(ConfigActivity.UPLOAD_URL_KEY, "");
-            RestAdapter restAdapter = new RestAdapter.Builder()
-                    .setEndpoint(endpoint)
-                    .build();
-            ObdService service = restAdapter.create(ObdService.class);
-            // upload readings
-            for (ObdReading reading : readings) {
+        protected String doInBackground(String... params) {
+            String result = "";
+
+            //Get the current thread's token
+            synchronized (this) {
+                Log.d(TAG, "Starting service..");
+                // get the remote Bluetooth device
+
+                final BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
+                dev = btAdapter.getRemoteDevice(params[0]);
+
+                Log.d(TAG, "Stopping Bluetooth discovery.");
+                btAdapter.cancelDiscovery();
+
+                Log.d(TAG, "Starting OBD connection..");
+
+                // Instantiate a BluetoothSocket for the remote device and connect it.
                 try {
-                    Response response = service.uploadReading(reading);
-                    assert response.getStatus() == 200;
-                } catch (RetrofitError re) {
-                    Log.e(TAG, re.toString());
+                    sock = BluetoothManager.connect(dev);
+                } catch (Exception e) {
+                    Log.e(
+                            TAG,
+                            "There was an error while establishing connection. -> "
+                                    + e.getMessage()
+                    );
+                    Log.d(TAG, "Message received on handler here");
+                    return null;
+                }
+
+                try {
+                    // Let's configure the connection.
+                    Log.d(TAG, "Queueing jobs for connection configuration..");
+
+                    onProgressUpdate(1);
+
+                    new ObdResetCommand().run(sock.getInputStream(), sock.getOutputStream());
+
+
+                    onProgressUpdate(2);
+
+                    new EchoOffCommand().run(sock.getInputStream(), sock.getOutputStream());
+
+                    onProgressUpdate(3);
+
+                    new LineFeedOffCommand().run(sock.getInputStream(), sock.getOutputStream());
+
+                    onProgressUpdate(4);
+
+                    new SelectProtocolCommand(ObdProtocols.AUTO).run(sock.getInputStream(), sock.getOutputStream());
+
+                    onProgressUpdate(5);
+
+                    TroubleCodesActivity.ModifiedTroubleCodesObdCommand tcoc = new TroubleCodesActivity.ModifiedTroubleCodesObdCommand();
+                    tcoc.run(sock.getInputStream(), sock.getOutputStream());
+                    result = tcoc.getFormattedResult();
+
+                    onProgressUpdate(6);
+
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    Log.e("DTCERR", e.getMessage());
+                    return null;
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    Log.e("DTCERR", e.getMessage());
+                    return null;
+                } catch (UnableToConnectException e) {
+                    e.printStackTrace();
+                    Log.e("DTCERR", e.getMessage());
+                    return null;
+                } catch (MisunderstoodCommandException e) {
+                    e.printStackTrace();
+                    Log.e("DTCERR", e.getMessage());
+                    return null;
+                } catch (NoDataException e) {
+                    Log.e("DTCERR", e.getMessage());
+                    return null;
+                } catch (Exception e) {
+                    Log.e("DTCERR", e.getMessage());
+                } finally {
+
+                    // close socket
+                    closeSocket(sock);
                 }
 
             }
-            Log.d(TAG, "Done");
-            return null;
+
+            return result;
         }
 
+        public void closeSocket(BluetoothSocket sock) {
+            if (sock != null)
+                // close socket
+                try {
+                    sock.close();
+                } catch (IOException e) {
+                    Log.e(TAG, e.getMessage());
+                }
+        }
+
+        @Override
+        protected void onProgressUpdate(Integer... values) {
+            super.onProgressUpdate(values);
+        }
+
+        @Override
+        protected void onPostExecute(String result) {
+            String endResult = result.replace('\n', ',');
+            new UploadAsyncTask().execute(endResult);
+        }
     }
 }
